@@ -35,6 +35,9 @@ concept GeneratorImplementation = requires(GeneratorType t)
 
 class Generator
 {
+public:
+    static std::string SDKFolder;
+
 private:
     friend class GeneratorTest;
 

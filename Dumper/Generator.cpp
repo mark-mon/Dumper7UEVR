@@ -6,6 +6,8 @@
 #include "PackageManager.h"
 #include "Utils.h"
 
+std::string Generator::SDKFolder = "c:\\dumper7uevr";
+
 inline void InitWeakObjectPtrSettings()
 {
 	UEStruct LoadAsset = ObjectArray::FindObjectFast<UEFunction>("LoadAsset", EClassCastFlags::Function);
@@ -115,11 +117,7 @@ bool Generator::SetupDumperFolder()
 {
 	try
 	{
-		std::string FolderName = (Settings::Generator::GameVersion + '-' + Settings::Generator::GameName);
-
-		FileNameHelper::MakeValidFileName(FolderName);
-
-		DumperFolder = fs::path(Settings::Generator::SDKGenerationPath) / FolderName;
+		DumperFolder = fs::path(SDKFolder);
 
 		if (fs::exists(DumperFolder))
 		{

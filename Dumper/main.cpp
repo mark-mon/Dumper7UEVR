@@ -1,3 +1,5 @@
+#define _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
+
 #include <Windows.h>
 #include <iostream>
 #include <chrono>
@@ -15,6 +17,231 @@
 
 
 #include "UnicodeNames.h"
+BOOL StartUEDump(std::string DumpLocation, HANDLE hModule);
+
+/*
+This file (Plugin.cpp) is licensed under the MIT license and is separate from the rest of the UEVR codebase.
+
+Copyright (c) 2023 praydog
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+#define _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
+
+#include <sstream>
+#include <mutex>
+#include <memory>
+#include <locale>
+#include <codecvt>
+#include <iostream>
+#include <fstream>
+
+#include <Windows.h>
+
+// only really necessary if you want to render to the screen
+
+#include "uevr/Plugin.hpp"
+#define MAX_PATH_SIZE 512
+#define TOUCH_PROXIMITY 0.15f
+
+typedef struct _HAPTIC_TIMER_STRUCT
+{
+	const UEVR_VRData* vr;
+	int MillisecondsDelay;
+}   HAPTIC_TIMER_STRUCT;
+
+
+using namespace uevr;
+
+#define PLUGIN_LOG_ONCE(...) \
+    static bool _logged_ = false; \
+    if (!_logged_) { \
+        _logged_ = true; \
+        API::get()->log_info(__VA_ARGS__); \
+    }
+
+
+
+class DumpPlugin : public uevr::Plugin {
+public:
+	API::UGameEngine* m_UEngine;
+	HAPTIC_TIMER_STRUCT m_Timer;
+	const UEVR_PluginInitializeParam* m_Param;
+	const UEVR_VRData* m_VR;
+	int m_DumpCount;
+	std::string m_PersistentDir;
+	std::string m_DumperDllLocation;
+	HANDLE mHandle;
+
+	DumpPlugin() = default;
+
+
+	void on_dllmain(HANDLE handle) override {
+		m_DumpCount = 0;
+		m_UEngine = NULL;
+		mHandle = handle;
+	}
+
+	void on_initialize() override {
+		wchar_t PersistentDir[MAX_PATH_SIZE];
+		ZeroMemory(PersistentDir, MAX_PATH_SIZE * sizeof(wchar_t));
+		std::wstring WSDir;
+		m_Param = API::get()->param();
+		m_VR = m_Param->vr;
+
+
+		API::get()->param()->functions->get_persistent_dir(PersistentDir, MAX_PATH_SIZE);
+
+		WSDir = PersistentDir;
+
+		std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+		m_PersistentDir = converter.to_bytes(WSDir);
+		m_DumperDllLocation = m_PersistentDir + std::string("\\Dumper7SDK");
+
+		API::get()->log_info("dump.dll: dumper7.dll location: %s", m_DumperDllLocation.c_str());
+
+		ZeroMemory(&m_Timer, sizeof(HAPTIC_TIMER_STRUCT));
+		m_Timer.vr = API::get()->param()->vr;
+		m_Timer.MillisecondsDelay = 0;
+	}
+
+
+	//*******************************************************************************************
+	//
+	// Pass controller 1 and controller 2 instead of controller and hmd to see if controllers
+	// aer near each other.
+	// proximity is probably in 1.0 meter virtual ranges.
+	//
+	//*******************************************************************************************
+	bool is_controller_near_hmd(
+		UEVR_TrackedDeviceIndex controller_index,
+		float proximity_threshold, // Define a threshold distance
+		UEVR_TrackedDeviceIndex hmd_index)
+	{
+
+		UEVR_Vector3f controller_pos, hmd_pos;
+		UEVR_Quaternionf unused_rotation; // Not needed for this calculation
+
+		ZeroMemory(&controller_pos, sizeof(controller_pos));
+		ZeroMemory(&hmd_pos, sizeof(hmd_pos));
+		ZeroMemory(&unused_rotation, sizeof(unused_rotation));
+
+		// Use VR->get_pose() directly
+		m_VR->get_pose(controller_index, &controller_pos, &unused_rotation);
+		m_VR->get_pose(hmd_index, &hmd_pos, &unused_rotation);
+
+		// Compute the squared distance between the two points
+		float distance_squared =
+			(controller_pos.x - hmd_pos.x) * (controller_pos.x - hmd_pos.x) +
+			(controller_pos.y - hmd_pos.y) * (controller_pos.y - hmd_pos.y) +
+			(controller_pos.z - hmd_pos.z) * (controller_pos.z - hmd_pos.z);
+
+		API::get()->log_info("distance: %f, proximity: %f", distance_squared, proximity_threshold * proximity_threshold);
+
+		// Compare against squared threshold to avoid expensive sqrt calculation
+		return distance_squared <= proximity_threshold * proximity_threshold;
+	}
+
+
+	//*******************************************************************************************
+	// This is the controller input routine. Everything happens here.
+	//*******************************************************************************************
+	void on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE* state) {
+		static bool Dumped = false;
+
+
+		if (Dumped == true) return;
+
+		if (state != NULL) {
+			if (state->Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB &&
+				state->Gamepad.bLeftTrigger >= 200 &&
+				state->Gamepad.bRightTrigger >= 200) {
+				Dumped = true;
+
+				UEVR_InputSourceHandle LeftController = m_VR->get_left_joystick_source();
+				UEVR_InputSourceHandle RightController = m_VR->get_right_joystick_source();
+
+				API::get()->log_info("dump.dll: dumping values");
+				m_VR->trigger_haptic_vibration(0.0f, 0.05f, 1.0f, 1.0f, LeftController);
+				m_VR->trigger_haptic_vibration(0.0f, 0.05f, 1.0f, 1.0f, RightController);
+				print_all_objects();
+				m_VR->trigger_haptic_vibration(0.0f, 0.05f, 1.0f, 1.0f, LeftController);
+				m_VR->trigger_haptic_vibration(0.0f, 0.05f, 1.0f, 1.0f, RightController);
+				API::get()->log_info("dump.dll: Loading dumper7.dll");
+				StartUEDump(m_DumperDllLocation, mHandle);
+			}
+		}
+	}
+
+	void print_all_objects() {
+		m_DumpCount++;
+		std::string File = m_PersistentDir + "\\object_dump_" + std::to_string(m_DumpCount) + ".txt";
+		API::get()->log_info("Printing all objects to %s", File.c_str());
+
+		std::ofstream file(File);
+		if (file.is_open()) {
+			file << "Chunked: " << API::FUObjectArray::is_chunked() << "\n";
+			file << "Inlined: " << API::FUObjectArray::is_inlined() << "\n";
+			file << "Objects offset: " << API::FUObjectArray::get_objects_offset() << "\n";
+			file << "Item distance: " << API::FUObjectArray::get_item_distance() << "\n";
+			file << "Object count: " << API::FUObjectArray::get()->get_object_count() << "\n";
+			file << "------------\n";
+
+			const auto objects = API::FUObjectArray::get();
+
+			if (objects == nullptr) {
+				file << "Failed to get FUObjectArray\n";
+				file.close();
+				return;
+			}
+
+			std::string Categories[2] = { "Class", "Function" };
+			for (int32_t i = 0; i < objects->get_object_count(); ++i) {
+				const auto object = objects->get_object(i);
+
+				if (object == nullptr) {
+					continue;
+				}
+
+				const auto name = object->get_full_name();
+
+				if (name.empty()) {
+					continue;
+				}
+
+				std::string name_narrow{ std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(name) };
+
+				file << i << " " << name_narrow << "\n";
+			}
+
+			file.close();
+		}
+	}
+
+
+};
+
+// Actually creates the plugin. Very important that this global is created.
+// The fact that it's using std::unique_ptr is not important, as long as the constructor is called in some way.
+std::unique_ptr<DumpPlugin> g_plugin{ new DumpPlugin() };
+
 
 enum class EFortToastType : uint8
 {
@@ -70,6 +297,7 @@ DWORD MainThread(HMODULE Module)
 
 	std::cout << "\n\nGenerating SDK took (" << ms_double_.count() << "ms)\n\n\n";
 
+#if 0
 	while (true)
 	{
 		if (GetAsyncKeyState(VK_F6) & 1)
@@ -83,18 +311,20 @@ DWORD MainThread(HMODULE Module)
 
 		Sleep(100);
 	}
+#endif
+    fclose(stdout);
+    if (Dummy) fclose(Dummy);
+    FreeConsole();
+	ExitThread(0);
+    //FreeLibraryAndExitThread(Module, 0);
 
 	return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved)
+BOOL StartUEDump(std::string DumpLocation, HANDLE hModule)
 {
-	switch (reason)
-	{
-	case DLL_PROCESS_ATTACH:
-		CreateThread(0, 0, (LPTHREAD_START_ROUTINE)MainThread, hModule, 0, 0);
-		break;
-	}
+	Generator::SDKFolder = DumpLocation;
+	CreateThread(0, 0, (LPTHREAD_START_ROUTINE)MainThread, hModule, 0, 0);
 
 	return TRUE;
 }
