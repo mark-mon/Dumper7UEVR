@@ -123,42 +123,27 @@ public:
 	}
 
 
-	//*******************************************************************************************
-	//
-	// Pass controller 1 and controller 2 instead of controller and hmd to see if controllers
-	// aer near each other.
-	// proximity is probably in 1.0 meter virtual ranges.
-	//
-	//*******************************************************************************************
-	bool is_controller_near_hmd(
-		UEVR_TrackedDeviceIndex controller_index,
-		float proximity_threshold, // Define a threshold distance
-		UEVR_TrackedDeviceIndex hmd_index)
-	{
 
-		UEVR_Vector3f controller_pos, hmd_pos;
-		UEVR_Quaternionf unused_rotation; // Not needed for this calculation
 
-		ZeroMemory(&controller_pos, sizeof(controller_pos));
-		ZeroMemory(&hmd_pos, sizeof(hmd_pos));
-		ZeroMemory(&unused_rotation, sizeof(unused_rotation));
+	void on_present(){
+	    	static bool Dumped = false;
 
-		// Use VR->get_pose() directly
-		m_VR->get_pose(controller_index, &controller_pos, &unused_rotation);
-		m_VR->get_pose(hmd_index, &hmd_pos, &unused_rotation);
 
-		// Compute the squared distance between the two points
-		float distance_squared =
-			(controller_pos.x - hmd_pos.x) * (controller_pos.x - hmd_pos.x) +
-			(controller_pos.y - hmd_pos.y) * (controller_pos.y - hmd_pos.y) +
-			(controller_pos.z - hmd_pos.z) * (controller_pos.z - hmd_pos.z);
+		if (Dumped == true) return;
 
-		API::get()->log_info("distance: %f, proximity: %f", distance_squared, proximity_threshold * proximity_threshold);
+    		if (GetAsyncKeyState(VK_F8) & 1)
+		{
+		    Dumped = true;
+				API::get()->log_info("dump.dll: dumping values");
+				print_all_objects();
+				API::get()->log_info("dump.dll: Loading dumper7.dll");
+				StartUEDump(m_DumperDllLocation, mHandle);
+			}
+		}
 
-		// Compare against squared threshold to avoid expensive sqrt calculation
-		return distance_squared <= proximity_threshold * proximity_threshold;
-	}
 
+
+        
 
 	//*******************************************************************************************
 	// This is the controller input routine. Everything happens here.
